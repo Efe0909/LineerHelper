@@ -1,25 +1,29 @@
+import time
 import tkinter as tk
 from tkinter import messagebox
 import numpy as np
 from numpy.linalg import det, solve
-from numpy import cross
+from numpy import cross, ndarray
 import re
 from queue import Queue
 from typing import Optional
 
 # Initialize matrix registers
-registers: dict[str, Optional[np.ndarray]] = {'A': None, 'B': None, 'C': None}
+registers: dict[str, Optional[np.ndarray]] = {'A': None, 'B': None, 'C': None, 'D': None, 'I': 1}
 message_queue: Queue[str] = Queue()
 
 class Matrix(np.ndarray):
-    """Custom class that inherits from numpy.ndarray to support matrix operations and custom __str__ format."""
+    """
+    Custom class that inherits from numpy.ndarray to support matrix operations
+    and custom string format for copying as a matrix template.
+    """
 
     def __str__(self) -> str:
         """
-        Format matrix as @MATX{{;};{;}} for matrix output.
+        Format matrix for output in a structured string for clipboard.
 
         Returns:
-            str: The formatted string representation of the matrix.
+            str: A formatted string representation of the matrix as @MATX{{;};{;}}.
         """
         matrix_str = "@MATX{{"
         rows, cols = self.shape
@@ -32,26 +36,28 @@ class Matrix(np.ndarray):
         return matrix_str
 
 def parse_matrix(elements: list[float], rows: int, cols: int) -> Matrix:
-    """Convert the list of elements into a numpy array.
+    """
+    Convert a flat list of elements into a 2D numpy array for matrix form.
 
     Args:
-        elements (list[float]): The elements of the matrix.
-        rows (int): The number of rows.
-        cols (int): The number of columns.
+        elements (list[float]): A flat list of matrix elements.
+        rows (int): Number of rows in the matrix.
+        cols (int): Number of columns in the matrix.
 
     Returns:
-        Matrix: A matrix object created from the elements.
+        Matrix: A numpy Matrix object reshaped into (rows, cols).
     """
     return np.array(elements).reshape((rows, cols)).view(Matrix)
 
 def format_element(element: str) -> str:
-    """Format matrix element for @DIV and @RT syntax.
+    """
+    Format a matrix element for custom syntax interpretation of division and square root.
 
     Args:
-        element (str): The matrix element to format.
+        element (str): The matrix element as a string, possibly containing 'sqrt' or 'div'.
 
     Returns:
-        str: The formatted element.
+        str: The formatted element with syntax @DIV or @RT, if applicable.
     """
     if "sqrt" in element:
         element = re.sub(r'sqrt(\d+)', r'@RT{\1}', element)
@@ -64,38 +70,41 @@ def format_element(element: str) -> str:
     return element
 
 def display_next_message() -> None:
-    """Display the next message in the queue, if available."""
+    """
+    Display the next message in the message queue via a popup, if any exist.
+    """
     if not message_queue.empty():
         message = message_queue.get()
         messagebox.showinfo("Info", message)
         root.after(100, display_next_message)
 
 def generate_matrix() -> None:
-    """Generate a matrix from user input and optionally store it in a register."""
+    """
+    Generate a matrix from user input, validate elements, and store in a register if specified.
+    Provides feedback messages on clipboard copy and register assignment.
+    """
     try:
-        # Get rows and columns from input
         rows: int = int(row_entry.get())
         cols: int = int(col_entry.get())
-        # Get matrix elements split by spaces
         matrix_elements: list[str] = matrix_entry.get().split()
 
-        # Check for "reg A", "reg B", etc. at the end
+        # Check for register assignment syntax "reg A", "reg B", etc.
         if len(matrix_elements) > rows * cols:
-            reg_name = matrix_elements[-2].lower()  # second last token should be 'reg'
-            reg_letter = matrix_elements[-1].upper()  # last token should be A, B, or C
-            if reg_name != 'reg' or reg_letter not in ['A', 'B', 'C']:
-                message_queue.put("Invalid register assignment. Use 'reg A', 'reg B', or 'reg C'.")
+            reg_name = matrix_elements[-2].lower()
+            reg_letter = matrix_elements[-1].upper()
+            if reg_name != 'reg' or reg_letter not in ['A', 'B', 'C', 'D']:
+                message_queue.put("Invalid register assignment. Use 'reg A', 'reg B', etc.")
                 return
-            matrix_elements = matrix_elements[:-2]  # Remove 'reg X' from the elements
-        else:
-            reg_letter = None  # No register provided
 
-        # Check if the number of elements matches rows * cols
+            matrix_elements = matrix_elements[:-2]
+        else:
+            reg_letter = None
+
         if len(matrix_elements) != rows * cols:
             message_queue.put("Number of elements doesn't match matrix size")
             return
 
-        # Create the matrix and optionally store it in a register
+        # Create matrix and optionally store it in a register
         matrix: Matrix = parse_matrix([float(format_element(el)) for el in matrix_elements], rows, cols)
 
         if reg_letter:
@@ -104,8 +113,8 @@ def generate_matrix() -> None:
 
         # Copy matrix string to clipboard
         matrix_str: str = str(matrix)
-        root.clipboard_clear()  # Clear previous clipboard contents
-        root.clipboard_append(matrix_str)  # Copy the matrix string
+        root.clipboard_clear()
+        root.clipboard_append(matrix_str)
         message_queue.put(f"Matrix copied to clipboard:\n{matrix_str}")
 
         # Start displaying messages
@@ -114,88 +123,114 @@ def generate_matrix() -> None:
     except ValueError:
         message_queue.put("Please enter valid integers for dimensions and numbers.")
 
-def open_equation_window() -> None:
-    """Open the equation entry window for matrix operations."""
-    eq_window = tk.Toplevel(root)
-    eq_window.title("Matrix Operations")
+def evaluate_equation() -> None:
+    """
+    Evaluate the matrix equation from user input and optionally assign to a register.
+    WARNING: Uses eval() which can execute arbitrary code, avoid using with untrusted input.
+    """
+    equation: str = equation_entry.get()
+    reg_x: Optional[str] = None
 
-    tk.Label(eq_window, text="Enter Equation:").pack()
-    equation_entry = tk.Entry(eq_window, width=50)
-    equation_entry.pack()
+    if "reg" in equation:
+        equation, reg_x = equation.split("reg")
+        reg_x = reg_x.upper().replace(" ", "")
+        if reg_x not in registers.keys():
+            message_queue.put("Invalid register assignment. Use 'reg A', 'reg B', etc.")
+            reg_x = None
 
-    equation_entry.focus_set()
-    def evaluate_equation() -> None:
-        """Evaluate the matrix equation entered by the user.
-        !!! It's not a secure implementation as it uses eval(). """
-        equation: str = equation_entry.get()
-        reg_x: Optional[str] = None
+    try:
+        # Replace register names with matrix objects
+        equation = equation.replace("A", "registers['A']")
+        equation = equation.replace("B", "registers['B']")
+        equation = equation.replace("C", "registers['C']")
+        equation = equation.replace("D", "registers['D']")
+        equation = equation.replace("I", "registers['I']")
 
-        # Check for register assignment
-        if "reg" in equation:
-            equation, reg_x = equation.split("reg")
-            reg_x = reg_x.upper().replace(" ", "")
-            if reg_x not in registers.keys():
-                message_queue.put("Invalid register assignment. Use 'reg A', 'reg B', or 'reg C'.")
-                reg_x = None
+        # Eval with numpy functions and registers
+        context = {'registers': registers, 'np': np, 'det': det, 'solve': solve, 'cross': cross}
+        result = eval(equation, context)
 
-        try:
-            # Replace register names with the matrix objects
-            equation = equation.replace("A", "registers['A']")
-            equation = equation.replace("B", "registers['B']")
-            equation = equation.replace("C", "registers['C']")
+        if reg_x:
+            registers[reg_x] = result
+            message_queue.put(f"Matrix stored in register {reg_x}!")
 
-            # Add linear algebra functions to the eval context
-            context = {
-                'registers': registers,
-                'np': np,
-                'det': det,
-                'solve': solve,
-                'cross': cross
-            }
+        message_queue.put(f"Result:\n{result}")
+        display_next_message()
 
-            # Evaluate the expression using numpy functions
-            result = eval(equation, context)
+    except Exception as e:
+        message_queue.put(f"Invalid Equation: {e}")
+        display_next_message()
 
-            if reg_x:
-                registers[reg_x] = result
-                message_queue.put(f"Matrix stored in register {reg_x}!")
+def call_register(lbl) -> str:
+    """
+    Handle selection of a register label, specifically showing a popup for identity matrix size input.
 
-            message_queue.put(f"Result:\n{result}")
-            display_next_message()
+    Args:
+        lbl (str): The label of the matrix to call (e.g., 'A', 'B', or 'I' for identity).
 
-        except Exception as e:
-            message_queue.put(f"Invalid Equation: {e}")
-            display_next_message()
+    Returns:
+        str: The register label.
+    """
+    if lbl == 'I':
+        popup = tk.Toplevel(root)
+        popup.title("Choose size for Identity matrix")
+        tk.Label(popup, text="Enter integer:").pack(pady=10)
+        identity_entry = tk.Entry(popup)
+        identity_entry.pack(pady=5, padx=12)
+        identity_entry.focus_set()
 
-    eq_window.bind('<Escape>', lambda e: eq_window.destroy())
+        def submit_size():
+            nonlocal lbl
+            try:
+                size_input = int(identity_entry.get())
+                registers['I'] = np.eye(size_input)
+                popup.destroy()
+            except ValueError:
+                messagebox.showerror("Invalid input", "Please enter a valid integer.")
 
-    evaluate_button = tk.Button(eq_window, text="Evaluate", command=evaluate_equation)
-    evaluate_button.pack()
+        identity_entry.bind("<Return>", lambda e: submit_size())
+        popup.wait_window()
+    return lbl
 
-# Function to handle Shift+Enter key press
+def write_reg(register):
+    """
+    Insert text from a specified register at the current caret position in equation_entry.
+
+    Args:
+        register (str): The name of the register to insert (e.g., 'A', 'B').
+    """
+    if registers.get(register, None) is None:
+        return
+    current_position = equation_entry.index(tk.INSERT)
+    equation_entry.insert(current_position, register)
+
 def handle_shift_enter(event: tk.Event) -> None:
-    """Handle Shift+Enter key press to generate a matrix."""
+    """
+    Handle Shift+Enter to trigger matrix generation and refocus on equation entry.
+    """
     generate_matrix()
+    equation_entry.focus_set()
 
-# Function to handle 'O' key press for opening equation window
-def handle_o_key(event: tk.Event) -> None:
-    """Handle 'O' key press to open the equation window."""
-    open_equation_window()
-
-# Function to handle Enter key press for focus changing
 def handle_enter(event: tk.Event) -> None:
-    """Handle Enter key press to change focus between input fields."""
+    """
+    Handle Enter key to shift focus between input fields and trigger actions.
+
+    Args:
+        event (tk.Event): Key event triggered by pressing Enter.
+    """
     widget = event.widget
     if widget == row_entry:
-        col_entry.focus_set()  # Move focus to columns entry
+        col_entry.focus_set()
     elif widget == col_entry:
-        matrix_entry.focus_set()  # Move focus to matrix entry
+        matrix_entry.focus_set()
     elif widget == matrix_entry:
-        generate_matrix()  # Generate matrix if matrix entry is focused
+        generate_matrix()
+    elif widget == equation_entry:
+        evaluate_equation()
 
-# Initialize the Tkinter window
+# Initialize Tkinter window and input fields
 root = tk.Tk()
-root.title("Matrix Input Helper")
+root.title("Matrix Helper")
 
 # Row and column input
 tk.Label(root, text="Rows:").grid(row=0, column=0)
@@ -212,23 +247,27 @@ tk.Label(root, text="Matrix Elements (space separated):").grid(row=2, column=0, 
 matrix_entry = tk.Entry(root, width=50)
 matrix_entry.grid(row=3, column=0, columnspan=2)
 
-
 # Add a button to generate the matrix
 generate_button = tk.Button(root, text="Generate and Copy", command=generate_matrix)
 generate_button.grid(row=4, column=0, columnspan=2)
 
-# Button to open equation window
-equation_button = tk.Button(root, text="Open Equation Window", command=open_equation_window)
-equation_button.grid(row=5, column=0, columnspan=2)
+# Equation input and evaluate button
+equation_entry = tk.Entry(root, width=50)
+equation_entry.grid(row=5, column=0, columnspan=2)
+evaluate_button = tk.Button(root, text="Evaluate Expression", command=evaluate_equation)
+evaluate_button.grid(row=6, column=1, columnspan=1)
 
-# Bind Shift+Enter to generate matrix and copy
+# Use enumerate to create buttons and place them in the grid
+button_frame = tk.Frame(root)
+
+for index, label in enumerate(("A", "B", "C", "D", "I")):
+    button = tk.Button(button_frame, text=label, command=lambda lbl=label: write_reg(call_register(lbl)))
+    button.grid(row=0, column=index, padx=5, pady=5)
+
+button_frame.grid(row=6, column=0, columnspan=1)
+
+# Bind events for Enter key handling
+root.bind('<Return>', handle_enter)
 root.bind('<Shift-Return>', handle_shift_enter)
 
-# Bind 'O' key to open equation window
-root.bind('<o>', handle_o_key)
-
-# Bind Enter to change focus
-root.bind('<Return>', handle_enter)
-
-# Run the Tkinter event loop (until the user exits)
 root.mainloop()
